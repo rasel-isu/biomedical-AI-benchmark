@@ -17,18 +17,18 @@ from pathlib import Path
 # ── Dataset metadata ──────────────────────────────────────────────────────────
 DATASET_CONFIG = {
     # key               folder name in repo                task type
-    "bc5cdr_chem":   {"folder": "[NER]BC5CDR_Chemical",   "task": "ner",    "entity_type": "chemical"},
-    "ncbi_disease":  {"folder": "[NER]NCBI_Disease",       "task": "ner",    "entity_type": "disease"},
-    "chemprot":      {"folder": "[RE]Chemprot",            "task": "re",     "dataset": "chemprot"},
-    "ddi":           {"folder": "[RE]DDI",                 "task": "re",     "dataset": "ddi"},
-    "hoc":           {"folder": "[MLC]Hoc",                "task": "mlc",    "dataset": "hoc"},
-    "litcovid":      {"folder": "[MLC]LitCovid",           "task": "mlc",    "dataset": "litcovid"},
+    "bc5cdr_chem":  {"folder": "[NER]BC5CDR_Chemical", "task": "ner", "entity_type": "chemical", "format": "conll"},
+    "ncbi_disease": {"folder": "[NER]NCBI_Disease",     "task": "ner", "entity_type": "disease",  "format": "conll"},
+    "chemprot": {"folder": "[RE]Chemprot", "task": "re", "dataset": "chemprot", "format": "tsv_re"},
+    "ddi":      {"folder": "[RE]DDI",      "task": "re", "dataset": "ddi",      "format": "tsv_re"},
+    "hoc":      {"folder": "[MLC]Hoc",      "task": "mlc", "dataset": "hoc",      "format": "tsv_mlc"},
+    "litcovid": {"folder": "[MLC]LitCovid", "task": "mlc", "dataset": "litcovid", "format": "tsv_mlc"},
     "medqa":         {"folder": "[QA]MedQA",               "task": "qa_medqa"},
-    "pubmedqa":      {"folder": "[QA]PubMedQA",            "task": "qa_pubmedqa"},
-    "pubmed_summ":   {"folder": "[Summarization]PubMed",   "task": "summarization", "dataset": "pubmed"},
-    "ms2":           {"folder": "[Summarization]MS2",      "task": "summarization", "dataset": "ms2"},
-    "cochrane":      {"folder": "[Simplification]CochranePLS", "task": "simplification"},
-    "plos":          {"folder": "[Simplification]PLOS",    "task": "simplification"},
+    "pubmedqa": {"folder": "[QA]PubMedQA", "task": "qa_pubmedqa", "format": "tsv_pubmedqa"},
+    "pubmed_summ": {"folder": "[Summarization]PubMed", "task": "summarization", "dataset": "pubmed", "format": "tsv_gen"},
+    "ms2":         {"folder": "[Summarization]MS2",     "task": "summarization", "dataset": "ms2",    "format": "tsv_gen"},
+    "cochrane": {"folder": "[Simplification]CochranePLS", "task": "simplification", "format": "tsv_gen"},
+    "plos":     {"folder": "[Simplification]PLOS",         "task": "simplification", "format": "tsv_gen"},
 }
 
 
@@ -48,6 +48,189 @@ def get_benchmark_root(project_root: str = ".") -> Path:
     )
 
 
+# New helper function:
+
+# 1c. Add these two helpers alongside _load_medqa_tsv():
+
+def _load_conll_tsv(path: Path) -> list[dict]:
+    sentences, tokens, labels = [], [], []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if line.strip() == "":
+                if tokens:
+                    sentences.append(_conll_to_instance(tokens, labels, len(sentences)))
+                    tokens, labels = [], []
+            else:
+                parts = line.split()
+                tokens.append(parts[0])
+                labels.append(parts[-1] if len(parts) >= 2 else "O")
+    if tokens:
+        sentences.append(_conll_to_instance(tokens, labels, len(sentences)))
+    return sentences
+
+
+def _conll_to_instance(tokens: list, labels: list, idx: int) -> dict:
+    sentence, entities, span = " ".join(tokens), [], []
+    for token, label in zip(tokens, labels):
+        if label == "B":
+            if span: entities.append(" ".join(span))
+            span = [token]
+        elif label == "I" and span:
+            span.append(token)
+        else:
+            if span: entities.append(" ".join(span)); span = []
+    if span: entities.append(" ".join(span))
+    return {"id": str(idx), "sentence": sentence,
+            "tokens": tokens, "labels": labels, "entities": entities}
+
+def _load_re_tsv(path: Path) -> list[dict]:
+    import csv
+    records = []
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for i, row in enumerate(reader):
+            index    = row.get("index", str(i)).strip()
+            sentence = row.get("sentence", "").strip()
+            label    = row.get("label", "false").strip()
+            pmid     = index.split(".")[0] if "." in index else str(i)
+
+            # Detect dataset from placeholder type
+            # ChemProt: @CHEMICAL$ and @GENE$
+            # DDI:      @DRUG$ (both entities are drugs)
+            if "@DRUG$" in sentence:
+                entity1 = "@DRUG$"
+                entity2 = "@DRUG$"
+            elif "@CHEMICAL$" in sentence:
+                entity1 = "@CHEMICAL$"
+                entity2 = "@GENE$"
+            else:
+                entity1 = "entity1"
+                entity2 = "entity2"
+
+            records.append({
+                "id":       index,
+                "pmid":     pmid,
+                "sentence": sentence,
+                "entity1":  entity1,
+                "entity2":  entity2,
+                "label":    label,
+            })
+    return records
+
+def _load_pubmedqa_tsv(path: Path) -> list[dict]:
+    """
+    Parse PubMedQA TSV format.
+    Columns: QUESTION  CONTEXTS  LABELS  MESHES  YEAR
+             reasoning_required_pred  reasoning_free_pred
+             final_decision  LONG_ANSWER  pmid
+
+    CONTEXTS is a Python list-as-string: ['sentence1', 'sentence2', ...]
+    final_decision is the gold label: yes / no / maybe
+    """
+    import csv
+    import ast
+
+    records = []
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for i, row in enumerate(reader):
+
+            # Parse CONTEXTS: stored as a Python list string
+            contexts_raw = row.get("CONTEXTS", "[]")
+            try:
+                contexts = ast.literal_eval(contexts_raw)
+                if isinstance(contexts, list):
+                    context = " ".join(str(c) for c in contexts)
+                else:
+                    context = str(contexts_raw)
+            except Exception:
+                context = contexts_raw
+
+            # Normalise final_decision to lowercase
+            final_decision = row.get("final_decision", "").strip().lower()
+            if final_decision not in ("yes", "no", "maybe"):
+                final_decision = row.get("reasoning_free_pred", "maybe").strip().lower()
+
+            records.append({
+                "id":             row.get("pmid", str(i)).strip(),
+                "question":       row.get("QUESTION", "").strip(),
+                "context":        context.strip(),
+                "long_answer":    row.get("LONG_ANSWER", "").strip(),
+                "final_decision": final_decision,
+                "meshes":         row.get("MESHES", ""),
+                "year":           row.get("YEAR", ""),
+            })
+    return records
+
+def _load_mlc_tsv(path: Path) -> list[dict]:
+    import csv
+    csv.field_size_limit(10_000_000)
+
+    records = []
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for i, row in enumerate(reader):
+            # labels column: "Label A;Label B;Label C"
+            labels_raw = row.get("labels", row.get("label", "")).strip()
+            labels = [l.strip() for l in labels_raw.split(";") if l.strip()]
+
+            records.append({
+                "id":     row.get("pmid", str(i)).strip(),
+                "text":   row.get("text", "").strip(),
+                "labels": labels,
+            })
+    return records
+
+def _load_gen_tsv(path: Path) -> list[dict]:
+    """
+    Parse generation task TSV files (CochranePLS, PLOS, PubMed summarization).
+    All share the same core pattern: source text → target text.
+
+    CochranePLS columns: gem_id  gem_parent_id  source  target  doi  references
+    PLOS columns:        likely  gem_id  source  target  (similar)
+    PubMed columns:      may use article/abstract naming
+    """
+    import csv
+    csv.field_size_limit(10_000_000)
+
+    records = []
+
+
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        fieldnames = reader.fieldnames or []
+
+        # Detect source/target column names flexibly
+        src_col = next(
+            (c for c in fieldnames if c.lower() in ("source", "article", "text", "src", "input")),
+            None
+        )
+        tgt_col = next(
+            (c for c in fieldnames if c.lower() in ("target", "abstract", "summary",
+                                                      "tgt", "output", "plain_language_summary")),
+            None
+        )
+        id_col = next(
+            (c for c in fieldnames if c.lower() in ("gem_id", "id", "pmid", "doi")),
+            None
+        )
+
+        if not src_col or not tgt_col:
+            raise ValueError(
+                f"Cannot detect source/target columns in {path}\n"
+                f"Found columns: {fieldnames}"
+            )
+
+        for i, row in enumerate(reader):
+            records.append({
+                "id":     row.get(id_col, str(i)).strip() if id_col else str(i),
+                "text":   row.get(src_col, "").strip(),
+                "target": row.get(tgt_col, "").strip(),
+            })
+
+    return records
+
 def load_test_data(dataset_key: str, project_root: str = ".") -> list[dict]:
     config     = _get_config(dataset_key)
     folder     = config["folder"]
@@ -66,6 +249,62 @@ def load_test_data(dataset_key: str, project_root: str = ".") -> list[dict]:
         raise FileNotFoundError(
             f"test.tsv not found for medqa\nTried: {[str(p) for p in tsv_candidates]}"
         )
+    
+    elif config.get("format") == "conll":
+        tsv_candidates = [
+            bench_root / folder / "datasets" / "full_set" / "test.tsv",
+            bench_root / folder / "datasets" / "test.tsv",
+            bench_root / folder / "test.tsv",
+        ]
+        for path in tsv_candidates:
+            if path.exists():
+                return _load_conll_tsv(path)
+        raise FileNotFoundError(f"test.tsv not found for '{dataset_key}'")
+    
+    elif config.get("format") == "tsv_re":
+        tsv_candidates = [
+            bench_root / folder / "datasets" / "full_set" / "test.tsv",
+            bench_root / folder / "datasets" / "test.tsv",
+            bench_root / folder / "test.tsv",
+        ]
+        for path in tsv_candidates:
+            if path.exists():
+                return _load_re_tsv(path)
+        raise FileNotFoundError(f"test.tsv not found for '{dataset_key}'")
+    
+    elif config.get("format") == "tsv_pubmedqa":
+        tsv_candidates = [
+            bench_root / folder / "datasets" / "full_set" / "test.tsv",
+            bench_root / folder / "datasets" / "test.tsv",
+            bench_root / folder / "test.tsv",
+        ]
+        for path in tsv_candidates:
+            if path.exists():
+                return _load_pubmedqa_tsv(path)
+        raise FileNotFoundError(f"test.tsv not found for '{dataset_key}'")
+    
+    elif config.get("format") == "tsv_gen":
+        tsv_candidates = [
+            bench_root / folder / "datasets" / "full_set" / "test.tsv",
+            bench_root / folder / "datasets" / "test.tsv",
+            bench_root / folder / "test.tsv",
+        ]
+
+        for path in tsv_candidates:
+            if path.exists():
+                return _load_gen_tsv(path)
+        raise FileNotFoundError(f"test.tsv not found for '{dataset_key}'")
+    
+    elif config.get("format") == "tsv_mlc":
+        tsv_candidates = [
+            bench_root / folder / "datasets" / "full_set" / "test.tsv",
+            bench_root / folder / "datasets" / "test.tsv",
+            bench_root / folder / "test.tsv",
+        ]
+        for path in tsv_candidates:
+            if path.exists():
+                return _load_mlc_tsv(path)
+        raise FileNotFoundError(f"test.tsv not found for '{dataset_key}'")
 
     # All other datasets: JSON
     json_candidates = [
@@ -158,7 +397,48 @@ def load_few_shot_examples(dataset_key: str, n_shots: int = 1,
             data = _load_medqa_tsv(tsv_path)
             return data[:n_shots]
         return []
+    
+    elif config.get("format") == "conll":
+        tsv_path = dataset_dir / "datasets" / "full_set" / "train.tsv"
+        if tsv_path.exists():
+            data = _load_conll_tsv(tsv_path)
+            return data[:n_shots]
+        # Also check prompt_oneshot.txt / prompt_fiveshot.txt
+        txt_name = {1: "prompt_oneshot.txt", 5: "prompt_fiveshot.txt"}.get(n_shots)
+        if txt_name:
+            txt_path = dataset_dir / txt_name
+            if txt_path.exists():
+                return []  # txt prompts handled directly — return empty, harness skips
+        return []
+    
+    elif config.get("format") == "tsv_re":
+        tsv_path = dataset_dir / "datasets" / "full_set" / "train.tsv"
+        if tsv_path.exists():
+            data = _load_re_tsv(tsv_path)
+            return data[:n_shots]
+        return []
+    
+    elif config.get("format") == "tsv_pubmedqa":
+        tsv_path = dataset_dir / "datasets" / "full_set" / "train.tsv"
+        if tsv_path.exists():
+            data = _load_pubmedqa_tsv(tsv_path)
+            return data[:n_shots]
+        return []
+    
+    elif config.get("format") == "tsv_gen":
+        tsv_path = dataset_dir / "datasets" / "full_set" / "train.tsv"
+        if tsv_path.exists():
+            data = _load_gen_tsv(tsv_path)
+            return data[:n_shots]
+        return []
 
+    elif config.get("format") == "tsv_mlc":
+        tsv_path = dataset_dir / "datasets" / "full_set" / "train.tsv"
+        if tsv_path.exists():
+            data = _load_mlc_tsv(tsv_path)
+            return data[:n_shots]
+        return []
+    
     # All other datasets: read from train.json
     train_candidates = [
         dataset_dir / "datasets" / "full_set" / "train.json",
@@ -183,12 +463,12 @@ def parse_instance(instance: dict, dataset_key: str) -> dict:
 
     if task == "ner":
         return {
-            "task":        task,
-            "dataset_key": dataset_key,
-            "entity_type": config.get("entity_type", "any"),
-            "sentence":    _get(instance, ["sentence", "text", "input"]),
+            "task":          task,
+            "dataset_key":   dataset_key,
+            "entity_type":   config.get("entity_type", "any"),
+            "sentence":      _get(instance, ["sentence", "text", "input"]),
             "gold_entities": _get_list(instance, ["entities", "labels", "gold"]),
-            "id":          _get(instance, ["id", "pmid", "idx"], ""),
+            "id":            _get(instance, ["id", "pmid", "idx"], ""),
         }
 
     elif task == "re":
@@ -197,10 +477,10 @@ def parse_instance(instance: dict, dataset_key: str) -> dict:
             "dataset_key": dataset_key,
             "dataset":     config.get("dataset", dataset_key),
             "sentence":    _get(instance, ["sentence", "text", "input"]),
-            "entity1":     _get(instance, ["entity1", "arg1", "subject"]),
-            "entity2":     _get(instance, ["entity2", "arg2", "object"]),
+            "entity1":     _get(instance, ["entity1", "arg1", "subject"], "@CHEMICAL$"),
+            "entity2":     _get(instance, ["entity2", "arg2", "object"],  "@GENE$"),
             "gold_label":  _get(instance, ["label", "relation", "gold"]),
-            "id":          _get(instance, ["id", "idx"], ""),
+            "id":          _get(instance, ["id", "index", "idx"], ""),
         }
 
     elif task == "mlc":
@@ -208,11 +488,10 @@ def parse_instance(instance: dict, dataset_key: str) -> dict:
             "task":        task,
             "dataset_key": dataset_key,
             "dataset":     config.get("dataset", dataset_key),
-            "abstract":    _get(instance, ["abstract", "text", "input"]),
-            "gold_labels": _get_list(instance, ["labels", "label", "gold"]),
-            "id":          _get(instance, ["id", "pmid", "idx"], ""),
+            "abstract":    _get(instance, ["abstract", "text", "source", "input"]),  # ✓ "text" covered
+            "gold_labels": _get_list(instance, ["labels", "label", "target", "gold"]),  # ✓ "labels" covered
+            "id":          _get(instance, ["id", "pmid", "idx"], ""),  # ✓ "pmid" covered
         }
-
     elif task == "qa_medqa":
         options = instance.get("options", {})
 
@@ -234,30 +513,30 @@ def parse_instance(instance: dict, dataset_key: str) -> dict:
         return {
             "task":        task,
             "dataset_key": dataset_key,
-            "question":    _get(instance, ["question", "input"]),
-            "context":     _get(instance, ["context", "abstract", "long_answer"]),
+            "question":    _get(instance, ["question", "QUESTION", "input"]),
+            "context":     _get(instance, ["context", "CONTEXTS", "abstract", "long_answer"]),
             "gold_answer": _get(instance, ["final_decision", "answer", "label"]),
-            "id":          _get(instance, ["id", "pubid", "idx"], ""),
+            "id":          _get(instance, ["id", "pmid", "pubid", "idx"], ""),
         }
 
     elif task == "summarization":
         return {
-            "task":        task,
-            "dataset_key": dataset_key,
-            "dataset":     config.get("dataset", dataset_key),
-            "text":        _get(instance, ["article", "text", "input", "src"]),
-            "gold_summary":_get(instance, ["abstract", "summary", "tgt", "gold"]),
-            "id":          _get(instance, ["id", "idx"], ""),
+            "task":         task,
+            "dataset_key":  dataset_key,
+            "dataset":      config.get("dataset", dataset_key),
+            "text":         _get(instance, ["text", "source", "article", "src", "input"]),
+            "gold_summary": _get(instance, ["target", "abstract", "summary", "tgt", "gold"]),
+            "id":           _get(instance, ["id", "gem_id", "idx"], ""),
         }
 
     elif task == "simplification":
         return {
             "task":        task,
             "dataset_key": dataset_key,
-            "text":        _get(instance, ["article", "text", "input", "src"]),
-            "gold_simple": _get(instance, ["plain_language_summary", "simplified",
-                                           "pls", "tgt", "gold"]),
-            "id":          _get(instance, ["id", "idx"], ""),
+            "text":        _get(instance, ["text", "source", "article", "src", "input"]),
+            "gold_simple": _get(instance, ["target", "plain_language_summary",
+                                            "simplified", "pls", "tgt", "gold"]),
+            "id":          _get(instance, ["id", "gem_id", "idx"], ""),
         }
 
     return {"task": task, "dataset_key": dataset_key, "raw": instance}

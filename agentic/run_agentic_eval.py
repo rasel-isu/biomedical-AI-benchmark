@@ -124,7 +124,19 @@ def evaluate_dataset(
     n_shots = {"zero_shot": 0, "one_shot": 1, "five_shot": 5}.get(setting, 0)
     few_shot_examples = []
     if n_shots > 0:
-        few_shot_examples = load_few_shot_examples(dataset_key, n_shots, project_root)
+        raw_examples = load_few_shot_examples(dataset_key, n_shots, project_root)
+        # Normalise CoNLL examples to the format ner_prompt() expects
+        task = DATASET_CONFIG[dataset_key]["task"]
+        if task == "ner":
+            few_shot_examples = [
+                {
+                    "sentence": e.get("sentence", ""),
+                    "entities": e.get("entities", []),
+                }
+                for e in raw_examples if e.get("sentence")
+            ]
+        else:
+            few_shot_examples = raw_examples
         print(f"  Few-shot examples loaded: {len(few_shot_examples)}")
 
     # ── Run agent on each instance ──

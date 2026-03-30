@@ -90,15 +90,18 @@ def re_prompt(
     if dataset.lower() == "chemprot":
         rel_map   = CHEMPROT_RELATIONS
         task_desc = (
-            f"Classify the relationship between the CHEMICAL '{entity1}' "
-            f"and the PROTEIN '{entity2}' in the sentence below."
+            "The sentence uses @CHEMICAL$ to mark the chemical "
+            "and @GENE$ to mark the protein/gene.\n"
+            "Classify the relationship between @CHEMICAL$ and @GENE$."
         )
         valid_labels = list(CHEMPROT_RELATIONS.keys())
+
     else:  # ddi
         rel_map   = DDI_RELATIONS
         task_desc = (
-            f"Classify the drug-drug interaction between '{entity1}' "
-            f"and '{entity2}' in the sentence below."
+            "The sentence uses @DRUG$ to mark both drug entities "
+            "(there may be multiple @DRUG$ mentions).\n"
+            "Classify the drug-drug interaction between the @DRUG$ entities."
         )
         valid_labels = list(DDI_RELATIONS.keys())
 
