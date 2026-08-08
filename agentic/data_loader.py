@@ -373,6 +373,31 @@ def _load_medqa_tsv(path: Path) -> list[dict]:
             })
     return records
 
+def load_train_pool(dataset_key: str, project_root: str = ".") -> list[dict]:
+    """
+    Load the FULL parsed train split (no n_shots truncation) to use as a
+    retrieval corpus for dynamic few-shot selection (see
+    agentic/dynamic_fewshot.py). Only implemented for the two formats
+    currently wired for it: conll (NER) and tsv_mlc (multi-label
+    classification) — see agentic/DESIGN_REVIEW.md §4.
+    """
+    config     = _get_config(dataset_key)
+    folder     = config["folder"]
+    bench_root = get_benchmark_root(project_root)
+    tsv_path   = bench_root / folder / "datasets" / "full_set" / "train.tsv"
+    if not tsv_path.exists():
+        return []
+
+    fmt = config.get("format")
+    if fmt == "conll":
+        return _load_conll_tsv(tsv_path)
+    if fmt == "tsv_mlc":
+        return _load_mlc_tsv(tsv_path)
+    raise ValueError(
+        f"load_train_pool() not implemented for format '{fmt}' (dataset '{dataset_key}')"
+    )
+
+
 def load_few_shot_examples(dataset_key: str, n_shots: int = 1,
                            project_root: str = ".") -> list[dict]:
     config      = _get_config(dataset_key)

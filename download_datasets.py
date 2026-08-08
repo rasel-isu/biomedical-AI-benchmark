@@ -36,7 +36,17 @@ HF_DATASETS = {
         "hf_id":       "allenai/mslr2022",
         "hf_name":     "ms2",              # config name within mslr2022
         "folder":      "[Summarization]MS2",
-        "splits":      {"train": "train", "dev": "validation", "test": "test"},
+        "loader":      "parquet",          # fetch via HF's auto-converted parquet
+                                            # files instead of `datasets.load_dataset`
+                                            # (mslr2022 uses a legacy loading script
+                                            # that needs trust_remote_code, which
+                                            # newer `datasets` releases no longer accept)
+        # NOTE: the official MS^2 test split has empty `target` values for every
+        # row (gold summaries are held out). Per the benchmark paper (Table 5,
+        # footnote b): "The gold standard of the testing set of MS^2 is not
+        # publicly available; we used the validation set instead." We do the same:
+        # train.tsv <- HF train split, test.tsv <- HF validation split.
+        "splits":      {"train": "train", "test": "validation"},
         "src_col":     "abstract",         # list of abstracts → join into one string
         "tgt_col":     "target",           # gold summary string
         "src_is_list": True,               # tells _write_tsv to join the list
@@ -48,13 +58,6 @@ BENCH_ROOT = Path("benchmarks/Biomedical-NLP-Benchmarks/benchmarks")
 
 
 def download_all():
-    try:
-        from datasets import load_dataset
-    except ImportError:
-        print("ERROR: 'datasets' library not installed.")
-        print("Run: pip install datasets huggingface_hub")
-        return
-
     for key, cfg in HF_DATASETS.items():
         folder = BENCH_ROOT / cfg["folder"] / "datasets" / "full_set"
         folder.mkdir(parents=True, exist_ok=True)
@@ -65,6 +68,32 @@ def download_all():
             continue
 
         print(f"\n[DOWNLOADING] {key} from {cfg['hf_id']} ...")
+
+        if cfg.get("loader") == "parquet":
+            try:
+                for split_file, split_name in cfg["splits"].items():
+                    out_path = folder / f"{split_file}.tsv"
+                    if out_path.exists():
+                        print(f"  [SKIP] {split_file}.tsv exists")
+                        continue
+                    print(f"  Fetching '{split_name}' split via HF parquet API...")
+                    records = _fetch_parquet_records(cfg["hf_id"], cfg["hf_name"], split_name)
+                    print(f"  Writing {split_file}.tsv ({len(records)} instances)...")
+                    _write_tsv(records, out_path, cfg)
+                print(f"  [DONE] {key}")
+            except Exception as e:
+                print(f"  [ERROR] {key}: {e}")
+                print(f"  → Try manually: see instructions below for {key}")
+                _print_manual_instructions(key, cfg)
+            continue
+
+        try:
+            from datasets import load_dataset
+        except ImportError:
+            print("ERROR: 'datasets' library not installed.")
+            print("Run: pip install datasets huggingface_hub")
+            return
+
         try:
             # Load from HuggingFace
             load_kwargs = {"path": cfg["hf_id"], "trust_remote_code": True}
@@ -95,6 +124,48 @@ def download_all():
             print(f"  → Try manually: see instructions below for {key}")
             _print_manual_instructions(key, cfg)
 
+
+
+def _fetch_parquet_records(hf_id: str, hf_name: str, split: str) -> list:
+    """
+    Fetch all rows of a dataset split as a list of dicts, via HuggingFace's
+    auto-converted parquet files (works even for datasets whose original
+    loading script is no longer supported by the installed `datasets` version).
+    """
+    import tempfile
+    import pandas as pd
+    import requests
+
+    api_url = f"https://datasets-server.huggingface.co/parquet?dataset={hf_id}&config={hf_name}"
+    resp = requests.get(api_url, timeout=30)
+    resp.raise_for_status()
+    files = [
+        f for f in resp.json()["parquet_files"]
+        if f["config"] == hf_name and f["split"] == split
+    ]
+    if not files:
+        raise ValueError(f"No parquet files found for {hf_id}/{hf_name}/{split}")
+
+    frames = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for f in sorted(files, key=lambda x: x["filename"]):
+            local_path = os.path.join(tmp, f["filename"])
+            r = requests.get(f["url"], timeout=300)
+            r.raise_for_status()
+            with open(local_path, "wb") as out:
+                out.write(r.content)
+            frames.append(pd.read_parquet(local_path))
+    df = pd.concat(frames, ignore_index=True)
+    records = df.to_dict("records")
+
+    # Parquet list-columns come back as numpy arrays, not plain Python lists,
+    # so `isinstance(x, list)` checks downstream (e.g. in _write_tsv) would
+    # silently miss them and fall back to str()'ing the raw array repr.
+    for record in records:
+        for k, v in record.items():
+            if hasattr(v, "tolist"):
+                record[k] = v.tolist()
+    return records
 
 
 def _write_tsv(split_data, out_path: Path, cfg: dict):

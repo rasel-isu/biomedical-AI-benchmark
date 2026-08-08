@@ -1,54 +1,102 @@
 eval $(/lustre/hdd/LAS/qli-lab/rasel/apps/miniconda3/bin/conda shell.bash hook)
 source /lustre/hdd/LAS/qli-lab/rasel/apps/miniconda3/etc/profile.d/conda.sh
 conda activate bio-nlp-next
-# conda create --prefix /lustre/hdd/LAS/qli-lab/rasel/apps/miniconda3/envs/bio-nlp-next python=3.13.12 -y
-# salloc --nodes=1 --gres=gpu --partition=scavenger --mem=100G  --time=2-12:00:00
 
-pip install torch transformers datasets accelerate peft
-pip install langchain openai anthropic
-pip install evaluate rouge-score bert-score
-pip install pandas numpy scikit-learn jupyter
+# ── Parse args ──
+# Usage:
+#   ./run.sh --model gpt-4                                 # OpenAI (default)
+#   ./run.sh --model llama3.1 --host http://127.0.0.1:11435 # local Ollama
+# MODEL="gpt-4"
+# HOST=""
 
-export OPENAI_API_KEY=
+MODEL="llama3.2:3b-instruct-fp16"
+HOST="http://127.0.0.1:11435"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model)
+      MODEL="$2"
+      shift 2
+      ;;
+    --host)
+      HOST="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+HOST_ARGS=()
+if [[ -n "$HOST" ]]; then
+  echo "Using local Ollama model '$MODEL' at $HOST (no API key needed)"
+  HOST_ARGS=(--host "$HOST")
+else
+  echo "Using OpenAI model '$MODEL'"
+  export OPENAI_API_KEY=
+fi
 
 python -m agentic.run_agentic_eval \
-  --model gpt-4 \
+  --model "$MODEL" \
   --setting zero_shot \
-  --datasets medqa \
-  --max_instances 5
+  --datasets ncbi_disease bc5cdr_chem chemprot ddi hoc litcovid pubmedqa medqa ms2 pubmed_summ cochrane plos \
+  "${HOST_ARGS[@]}"
+
+# # Smoke test 
+# python -m agentic.run_agentic_eval \
+#   --model "$MODEL" \
+#   --setting zero_shot \
+#   --datasets ncbi_disease bc5cdr_chem chemprot ddi hoc litcovid pubmedqa medqa ms2 pubmed_summ cochrane plos \
+#   --max_instances 10 \
+#   "${HOST_ARGS[@]}"
 
 # Smoke test NER
-python -m agentic.run_agentic_eval \
-  --model gpt-4 \
-  --setting zero_shot \
-  --datasets ncbi_disease bc5cdr_chem \
-  --max_instances 5
+# python -m agentic.run_agentic_eval \
+#   --model "$MODEL" \
+#   --setting zero_shot \
+#   --datasets ncbi_disease bc5cdr_chem \
+#   --max_instances 5 \
+#   "${HOST_ARGS[@]}"
 
-# Smoke test RE
-python -m agentic.run_agentic_eval \
-  --model gpt-4 \
-  --setting zero_shot \
-  --datasets chemprot ddi \
-  --max_instances 5
+# # Smoke test RE
+# python -m agentic.run_agentic_eval \
+#   --model "$MODEL" \
+#   --setting zero_shot \
+#   --datasets chemprot ddi \
+#   --max_instances 5 \
+#   "${HOST_ARGS[@]}"
 
-# Smoke test on QA
-python -m agentic.run_agentic_eval \
-  --model gpt-4 \
-  --setting zero_shot \
-  --datasets pubmedqa medqa \
-  --max_instances 5
+# # Smoke test on MLC
+# python -m agentic.run_agentic_eval \
+#   --model "$MODEL" \
+#   --setting zero_shot \
+#   --datasets hoc litcovid \
+#   --max_instances 5 \
+#   "${HOST_ARGS[@]}"
+
+# # Smoke test on QA
+# python -m agentic.run_agentic_eval \
+#   --model "$MODEL" \
+#   --setting zero_shot \
+#   --datasets pubmedqa medqa \
+#   --max_instances 5 \
+#   "${HOST_ARGS[@]}"
 
 
-# Smoke test on Gen
-python -m agentic.run_agentic_eval \
-  --model gpt-4 \
-  --setting zero_shot \
-  --datasets cochrane pubmed_summ \
-  --max_instances 5
+# # Smoke test on Text  summarization
+# python -m agentic.run_agentic_eval \
+#   --model "$MODEL" \
+#   --setting zero_shot \
+#   --datasets ms2 pubmed_summ \
+#   --max_instances 5 \
+#   "${HOST_ARGS[@]}"
 
-# Smoke test on MLC
-python -m agentic.run_agentic_eval \
-  --model gpt-4 \
-  --setting zero_shot \
-  --datasets hoc litcovid \
-  --max_instances 5
+# # Smoke test on Text simplification
+# python -m agentic.run_agentic_eval \
+#   --model "$MODEL" \
+#   --setting zero_shot \
+#   --datasets cochrane plos \
+#   --max_instances 5 \
+#   "${HOST_ARGS[@]}"
+

@@ -21,9 +21,17 @@ from agentic.tools.pubmed_search import pubmed_search
 from agentic.tools.entity_lookup import entity_lookup
 
 # ──────────────────────────────────────────────
-# Client setup  (supports both OpenAI and Azure)
+# Client setup  (supports OpenAI, Azure, and local
+# Ollama servers via Ollama's OpenAI-compatible API)
 # ──────────────────────────────────────────────
-def get_client():
+def get_client(host: str | None = None):
+    if host:
+        base_url = host.rstrip("/")
+        if not base_url.endswith("/v1"):
+            base_url += "/v1"
+        # Local Ollama servers don't require an API key; the OpenAI SDK just
+        # needs a non-empty placeholder string.
+        return OpenAI(base_url=base_url, api_key="ollama")
     if os.getenv("AZURE_OPENAI_ENDPOINT"):
         return AzureOpenAI(
             api_key=os.environ["AZURE_OPENAI_API_KEY"],
@@ -98,6 +106,13 @@ TOOL_FUNCTIONS = {
 }
 
 
+def _resolve_tools(allowed_tools: list[str] | None) -> list[dict]:
+    """Subset TOOLS to just the named tools. None means 'all tools'."""
+    if allowed_tools is None:
+        return TOOLS
+    return [t for t in TOOLS if t["function"]["name"] in allowed_tools]
+
+
 # ──────────────────────────────────────────────
 # Core agent loop
 # ──────────────────────────────────────────────
@@ -108,9 +123,33 @@ def run_agent(
     max_steps: int = 6,
     temperature: float = 0.0,
     enable_tools: bool = True,
+    host: str | None = None,
+    allowed_tools: list[str] | None = None,
+    max_tool_calls_per_turn: int = 3,
+    validate_fn=None,
+    repair_instruction: str | None = None,
+    max_repairs: int = 1,
 ) -> dict[str, Any]:
     """
     Run the agentic loop for a single BioNLP instance.
+
+    Args:
+      host: Base URL of a local Ollama server (e.g. "http://127.0.0.1:11435").
+            When set, requests go to Ollama's OpenAI-compatible API instead
+            of OpenAI/Azure.
+      allowed_tools: restrict the tool set to these names (subset of TOOLS).
+            None (default) offers every registered tool; pass [] to disable
+            tools without touching `enable_tools`.
+      max_tool_calls_per_turn: a single LLM turn can request many tool calls
+            at once (seen empirically up to 80 for a 3B local model on
+            MedQA). Calls beyond this cap are not executed — they get a
+            canned "budget exceeded" tool response instead, so the API's
+            requirement that every tool_call_id gets a reply is still met.
+      validate_fn: optional `str -> bool` checked against the *extracted*
+            answer (see _extract_answer). On failure, `repair_instruction`
+            is appended as a user turn and the model gets one more chance
+            (up to `max_repairs`) — a structural stand-in for the "self
+            verify" step the prompts only ask for in words.
 
     Returns a dict with:
       - answer        : str  – the final extracted answer
@@ -122,16 +161,18 @@ def run_agent(
       - total_tokens  : int
       - error         : str | None
     """
-    client = get_client()
+    client = get_client(host)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user",   "content": user_prompt},
     ]
+    active_tools = _resolve_tools(allowed_tools) if enable_tools else []
 
     num_steps = 0
     tool_calls_log = []
     input_tokens = 0
     output_tokens = 0
+    repairs_used = 0
 
     for step in range(max_steps):
         num_steps += 1
@@ -140,8 +181,8 @@ def run_agent(
             messages=messages,
             temperature=temperature,
         )
-        if enable_tools:
-            kwargs["tools"] = TOOLS
+        if active_tools:
+            kwargs["tools"] = active_tools
             kwargs["tool_choice"] = "auto"
 
         try:
@@ -159,9 +200,19 @@ def run_agent(
 
         # ── No tool call: agent gave a final answer ──
         if not msg.tool_calls:
+            content = msg.content or ""
+            extracted = _extract_answer(content)
+
+            if (validate_fn and repair_instruction
+                    and repairs_used < max_repairs
+                    and not validate_fn(extracted)):
+                repairs_used += 1
+                messages.append({"role": "user", "content": repair_instruction})
+                continue
+
             return {
-                "answer":        _extract_answer(msg.content or ""),
-                "raw_response":  msg.content or "",
+                "answer":        extracted,
+                "raw_response":  content,
                 "num_steps":     num_steps,
                 "tool_calls":    tool_calls_log,
                 "input_tokens":  input_tokens,
@@ -170,20 +221,30 @@ def run_agent(
                 "error":         None,
             }
 
-        # ── Execute each tool call ──
-        for tc in msg.tool_calls:
+        # ── Execute each tool call (capped per turn) ──
+        for i, tc in enumerate(msg.tool_calls):
             fn_name = tc.function.name
             try:
                 fn_args = json.loads(tc.function.arguments)
             except json.JSONDecodeError:
                 fn_args = {}
 
-            tool_result = _call_tool(fn_name, fn_args)
+            if i < max_tool_calls_per_turn:
+                tool_result = _call_tool(fn_name, fn_args)
+                executed = True
+            else:
+                tool_result = {
+                    "error": "tool-call budget exceeded for this turn — "
+                             "proceed with reasoning using what you already have"
+                }
+                executed = False
+
             tool_calls_log.append({
-                "step":      num_steps,
-                "tool":      fn_name,
-                "args":      fn_args,
+                "step":       num_steps,
+                "tool":       fn_name,
+                "args":       fn_args,
                 "result_len": len(str(tool_result)),
+                "executed":   executed,
             })
 
             messages.append({
