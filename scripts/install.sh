@@ -6,7 +6,8 @@ conda create --prefix /lustre/hdd/LAS/qli-lab/rasel/apps/miniconda3/envs/bio-nlp
 
 conda activate bio-nlp-next
 
-pip install torch transformers datasets accelerate peft
-pip install langchain openai anthropic
-pip install evaluate rouge-score bert-score
-pip install pandas numpy scikit-learn jupyter
+pip install -r requirements.txt
+# pip install torch transformers datasets accelerate peft
+# pip install langchain openai anthropic
+# pip install evaluate rouge-score bert-score
+# pip install pandas numpy scikit-learn jupyter
