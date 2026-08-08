@@ -352,6 +352,17 @@ def main():
         help="Seconds between calls (default 0; local servers rarely need it).")
     args = parser.parse_args()
 
+    # Fail fast on an empty model name. An empty --model "" passes argparse but
+    # the server rejects it per-request with a cryptic '400 - model is required'
+    # AFTER burning a call for every instance — usually it means an unset shell
+    # variable (e.g. MODEL="" in moe.sh) reached the flag.
+    if not args.model or not args.model.strip():
+        parser.error(
+            "--model is empty. Pass a model tag you've pulled, e.g. "
+            "--model mixtral:8x7b-instruct-v0.1-q4_K_M "
+            "(check `ollama list`). If you're using moe.sh, make sure MODEL is set."
+        )
+
     output_dir = Path(args.output_dir)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
