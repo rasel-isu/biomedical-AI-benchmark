@@ -1,5 +1,8 @@
-MODEL="mixtral:8x7b-instruct-v0.1-q4_K_M"
-HOST_ARGS=(--host http://127.0.0.1:11435)   # or HOST_ARGS=() for OpenAI/Azure
+eval $(/lustre/hdd/LAS/qli-lab/rasel/apps/miniconda3/bin/conda shell.bash hook)
+source /lustre/hdd/LAS/qli-lab/rasel/apps/miniconda3/etc/profile.d/conda.sh
+conda activate bio-nlp-next
+
+
 
 python -m moe.run_moe_eval \
   --model "$MODEL" \

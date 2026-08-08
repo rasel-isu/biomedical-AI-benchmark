@@ -76,7 +76,7 @@ from agentic.run_agentic_eval import (
 )
 
 # ── MoE execution stage (the only paradigm-specific piece) ────────────────────
-from moe.moe_runner import run_moe
+from moe.run_moe import run_moe
 
 ALL_DATASETS = list(DATASET_CONFIG.keys())
 
