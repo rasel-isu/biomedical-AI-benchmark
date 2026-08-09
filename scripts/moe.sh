@@ -15,6 +15,5 @@ HOST_ARGS=(--host "$HOST")
  python -m moe.run_moe_eval \
   --model "mixtral:8x7b-instruct-v0.1-q4_K_M" \
   --setting zero_shot \
-  --datasets ncbi_disease \
-  --max_instances 100 \
+  --datasets ncbi_disease bc5cdr_chem chemprot ddi hoc litcovid pubmedqa medqa ms2 pubmed_summ cochrane plos \
   --host "http://127.0.0.1:11435"
