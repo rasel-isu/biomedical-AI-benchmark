@@ -16,5 +16,5 @@ HOST_ARGS=(--host "$HOST")
   --model "mixtral:8x7b-instruct-v0.1-q4_K_M" \
   --setting zero_shot \
   --datasets ncbi_disease \
-  --max_instances 5 \
+  --max_instances 100 \
   --host "http://127.0.0.1:11435"
